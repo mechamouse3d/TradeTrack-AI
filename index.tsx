@@ -9,13 +9,38 @@ if (!rootElement) {
   throw new Error("Could not find root element to mount to");
 }
 
-// ACCESS VARIABLES INJECTED BY DOCKER/VITE
-const AUTH0_DOMAIN = import.meta.env.VITE_AUTH0_DOMAIN;
-const AUTH0_CLIENT_ID = import.meta.env.VITE_AUTH0_CLIENT_ID;
+/**
+ * Safely retrieve environment variables.
+ * In Vite environments, these are on import.meta.env.
+ * In some other environments, they might be on process.env.
+ */
+const getEnvVar = (key: string): string => {
+  try {
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+      // @ts-ignore
+      return import.meta.env[key];
+    }
+    // @ts-ignore
+    if (typeof process !== 'undefined' && process.env && process.env[key]) {
+      // @ts-ignore
+      return process.env[key];
+    }
+  } catch (e) {
+    console.warn(`Error accessing environment variable ${key}:`, e);
+  }
+  return '';
+};
 
-// Optional: specific error check to help you debug later
+const AUTH0_DOMAIN = getEnvVar('VITE_AUTH0_DOMAIN');
+const AUTH0_CLIENT_ID = getEnvVar('VITE_AUTH0_CLIENT_ID');
+
+// Log a warning if config is missing, but don't crash
 if (!AUTH0_DOMAIN || !AUTH0_CLIENT_ID) {
-  console.error("Missing Auth0 configuration. Check your Docker build args.");
+  console.warn(
+    "Auth0 configuration is missing. Authentication features will be disabled. " +
+    "Check your environment variables or Docker build arguments."
+  );
 }
 
 const root = ReactDOM.createRoot(rootElement);
