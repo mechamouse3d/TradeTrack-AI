@@ -9,9 +9,14 @@ if (!rootElement) {
   throw new Error("Could not find root element to mount to");
 }
 
-// REPLACE THESE WITH YOUR ACTUAL AUTH0 CREDENTIALS
-const AUTH0_DOMAIN = "";
-const AUTH0_CLIENT_ID = "";
+// ACCESS VARIABLES INJECTED BY DOCKER/VITE
+const AUTH0_DOMAIN = import.meta.env.VITE_AUTH0_DOMAIN;
+const AUTH0_CLIENT_ID = import.meta.env.VITE_AUTH0_CLIENT_ID;
+
+// Optional: specific error check to help you debug later
+if (!AUTH0_DOMAIN || !AUTH0_CLIENT_ID) {
+  console.error("Missing Auth0 configuration. Check your Docker build args.");
+}
 
 const root = ReactDOM.createRoot(rootElement);
 root.render(
