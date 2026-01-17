@@ -9,14 +9,15 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     define: {
-      // This is the critical part: it maps the build-time env var to the 
-      // specific property the Gemini SDK expects.
-      'process.env.API_KEY': JSON.stringify(env.VITE_GOOGLE_API_KEY || env.API_KEY),
-      // Also ensure standard process.env exists for general compatibility
-      'process.env': {
-        VITE_AUTH0_DOMAIN: JSON.stringify(env.VITE_AUTH0_DOMAIN),
-        VITE_AUTH0_CLIENT_ID: JSON.stringify(env.VITE_AUTH0_CLIENT_ID),
-      }
+      // We define the whole process.env object as a stringified literal.
+      // This is the most reliable way to polyfill process.env in a Vite/Browser environment
+      // so that properties like process.env.API_KEY are accessible at runtime.
+      'process.env': JSON.stringify({
+        API_KEY: env.VITE_GOOGLE_API_KEY || env.API_KEY || '',
+        VITE_AUTH0_DOMAIN: env.VITE_AUTH0_DOMAIN || '',
+        VITE_AUTH0_CLIENT_ID: env.VITE_AUTH0_CLIENT_ID || '',
+        NODE_ENV: mode,
+      })
     },
     build: {
       outDir: 'dist',

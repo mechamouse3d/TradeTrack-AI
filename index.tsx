@@ -9,11 +9,13 @@ if (!rootElement) {
   throw new Error("Could not find root element to mount to");
 }
 
-// In Vite, variables are typically on import.meta.env
-// But since we define process.env in vite.config.ts, we can check both
-// Cast import.meta to any to bypass TypeScript property checking for env
-const AUTH0_DOMAIN = ((import.meta as any).env?.VITE_AUTH0_DOMAIN) || (process.env?.VITE_AUTH0_DOMAIN) || '';
-const AUTH0_CLIENT_ID = ((import.meta as any).env?.VITE_AUTH0_CLIENT_ID) || (process.env?.VITE_AUTH0_CLIENT_ID) || '';
+/**
+ * Environment variables are polyfilled via vite.config.ts into process.env.
+ * We use process.env to maintain consistency with the Gemini SDK requirements
+ * and ensure all services find their credentials.
+ */
+const AUTH0_DOMAIN = process.env.VITE_AUTH0_DOMAIN || '';
+const AUTH0_CLIENT_ID = process.env.VITE_AUTH0_CLIENT_ID || '';
 
 if (!AUTH0_DOMAIN || !AUTH0_CLIENT_ID) {
   console.warn(
