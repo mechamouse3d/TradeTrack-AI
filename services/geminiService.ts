@@ -1,16 +1,13 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
 /**
- * Robust helper to get the API Key.
- * Prioritizes process.env.API_KEY as per guidelines.
+ * Strictly adhering to initialization guidelines:
+ * Always use const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
  */
-const getApiKey = () => {
-  return process.env.API_KEY || "";
-};
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const parseTransactionWithAI = async (input: string): Promise<any> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `Parse the following stock transaction details from the user input into a structured JSON object. 
@@ -52,7 +49,6 @@ export const parseTransactionWithAI = async (input: string): Promise<any> => {
 
 export const parseDocumentsWithAI = async (files: { mimeType: string; data: string }[]): Promise<any[]> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const parts = files.map(file => ({
       inlineData: {
         mimeType: file.mimeType,
