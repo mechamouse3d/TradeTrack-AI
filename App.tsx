@@ -8,11 +8,10 @@ import LoginModal from './components/LoginModal';
 import UserMenu from './components/UserMenu';
 import { useAuth } from './contexts/AuthContext';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-import { Plus, Database, TrendingUp, Upload, Loader2 } from 'lucide-react';
+import { Plus, Database, TrendingUp, Upload, Loader2, ArrowRight, Sparkles, BarChart3, Shield } from 'lucide-react';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1'];
 
-// Keeping a small set of default prices for common tickers to improve UX on first entry
 const DEFAULT_PRICES: Record<string, number> = {
   'AAPL': 175.00,
   'MSFT': 420.00,
@@ -27,6 +26,7 @@ const App: React.FC = () => {
   // State for data
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [currentPrices, setCurrentPrices] = useState<Record<string, number>>(DEFAULT_PRICES);
+  const [isGuestMode, setIsGuestMode] = useState(false);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
 
   // State for UI
@@ -35,12 +35,27 @@ const App: React.FC = () => {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
 
-  // Load data based on user session
+  // 1. One-time cleanup of legacy guest data and loading authenticated data
   useEffect(() => {
     if (isAuthLoading) return;
 
-    const txKey = user ? `transactions_${user.id}` : 'transactions_guest';
-    const pricesKey = user ? `prices_${user.id}` : 'prices_guest';
+    if (!user) {
+      // Cleanup legacy guest data if it exists
+      localStorage.removeItem('transactions_guest');
+      localStorage.removeItem('prices_guest');
+      
+      // Reset state for unauthenticated users
+      if (!isGuestMode) {
+        setTransactions([]);
+        setCurrentPrices(DEFAULT_PRICES);
+      }
+      setIsDataLoaded(true);
+      return;
+    }
+
+    // Authenticated data loading
+    const txKey = `transactions_${user.id}`;
+    const pricesKey = `prices_${user.id}`;
 
     const savedTx = localStorage.getItem(txKey);
     const savedPrices = localStorage.getItem(pricesKey);
@@ -48,7 +63,6 @@ const App: React.FC = () => {
     if (savedTx) {
       setTransactions(JSON.parse(savedTx));
     } else {
-      // Start with a completely empty list
       setTransactions([]);
     }
 
@@ -59,14 +73,14 @@ const App: React.FC = () => {
     }
     
     setIsDataLoaded(true);
-  }, [user, isAuthLoading]);
+  }, [user, isAuthLoading, isGuestMode]);
 
-  // Save data whenever it changes
+  // 2. Save logic - ONLY for authenticated users
   useEffect(() => {
-    if (!isDataLoaded || isAuthLoading) return;
+    if (!isDataLoaded || isAuthLoading || !user) return;
 
-    const txKey = user ? `transactions_${user.id}` : 'transactions_guest';
-    const pricesKey = user ? `prices_${user.id}` : 'prices_guest';
+    const txKey = `transactions_${user.id}`;
+    const pricesKey = `prices_${user.id}`;
 
     localStorage.setItem(txKey, JSON.stringify(transactions));
     localStorage.setItem(pricesKey, JSON.stringify(currentPrices));
@@ -105,7 +119,6 @@ const App: React.FC = () => {
     setTransactions(prev => prev.filter(t => t.id !== id));
   };
 
-  // --- Logic to Process Data ---
   const { portfolio, stats } = useMemo(() => {
     const groups: Record<string, Transaction[]> = {};
     transactions.forEach(t => {
@@ -175,12 +188,7 @@ const App: React.FC = () => {
 
     return {
       portfolio: stockSummaries,
-      stats: {
-        totalValue,
-        totalCostBasis,
-        totalRealizedPL,
-        totalUnrealizedPL
-      }
+      stats: { totalValue, totalCostBasis, totalRealizedPL, totalUnrealizedPL }
     };
   }, [transactions, currentPrices]);
 
@@ -191,7 +199,7 @@ const App: React.FC = () => {
       value: (s.currentPrice || 0) * s.totalShares
     }));
 
-  if (isAuthLoading || !isDataLoaded) {
+  if (isAuthLoading) {
       return (
           <div className="min-h-screen flex items-center justify-center bg-slate-50">
               <div className="flex flex-col items-center gap-2">
@@ -202,8 +210,105 @@ const App: React.FC = () => {
       );
   }
 
+  // --- Landing Page for Unauthenticated Users ---
+  if (!user && !isGuestMode) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <header className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="bg-indigo-600 p-2 rounded-lg text-white">
+              <TrendingUp size={24} />
+            </div>
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight">TradeTrack AI</h1>
+          </div>
+          <button 
+            onClick={() => setIsLoginOpen(true)}
+            className="px-6 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold transition-all shadow-lg shadow-slate-200"
+          >
+            Sign In
+          </button>
+        </header>
+
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 lg:py-24">
+          <div className="grid lg:grid-cols-2 gap-12 items-center">
+            <div className="space-y-8">
+              <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-sm font-bold">
+                <Sparkles size={16} /> Powered by Gemini AI
+              </div>
+              <h2 className="text-5xl lg:text-6xl font-extrabold text-slate-900 leading-tight">
+                Master your portfolio with <span className="text-indigo-600">AI Precision</span>.
+              </h2>
+              <p className="text-xl text-slate-600 leading-relaxed max-w-xl">
+                Automatically track stock trades, analyze P/L, and visualize your wealth. Simply describe your trades or upload statements.
+              </p>
+              <div className="flex flex-wrap gap-4">
+                <button 
+                  onClick={() => setIsLoginOpen(true)}
+                  className="px-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-bold text-lg transition-all shadow-xl shadow-indigo-100 flex items-center gap-2"
+                >
+                  Get Started Free <ArrowRight size={20} />
+                </button>
+                <button 
+                  onClick={() => setIsGuestMode(true)}
+                  className="px-8 py-4 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-2xl font-bold text-lg transition-all"
+                >
+                  Try Demo Mode
+                </button>
+              </div>
+            </div>
+            
+            <div className="relative">
+              <div className="absolute -inset-4 bg-indigo-500/10 blur-3xl rounded-full"></div>
+              <div className="relative bg-white p-2 rounded-3xl shadow-2xl border border-slate-100 overflow-hidden transform lg:rotate-2 hover:rotate-0 transition-transform duration-500">
+                 <img 
+                  src="https://images.unsplash.com/photo-1611974717537-48444f71104e?auto=format&fit=crop&q=80&w=1000" 
+                  alt="Dashboard Preview" 
+                  className="rounded-2xl w-full h-auto grayscale-[0.2]"
+                 />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-32 grid md:grid-cols-3 gap-8">
+            <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
+              <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-6">
+                <Sparkles size={24} />
+              </div>
+              <h3 className="text-xl font-bold text-slate-900 mb-3">AI Smart Entry</h3>
+              <p className="text-slate-600">Type naturally like "Bought 10 AAPL yesterday" and let Gemini parse your trade data instantly.</p>
+            </div>
+            <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
+              <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center mb-6">
+                <BarChart3 size={24} />
+              </div>
+              <h3 className="text-xl font-bold text-slate-900 mb-3">P/L Tracking</h3>
+              <p className="text-slate-600">Understand your total cost basis, realized returns, and current market value in one place.</p>
+            </div>
+            <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
+              <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center mb-6">
+                <Shield size={24} />
+              </div>
+              <h3 className="text-xl font-bold text-slate-900 mb-3">Privacy First</h3>
+              <p className="text-slate-600">Your data is yours. Guest data stays in-memory; authenticated data is securely stored via your ID.</p>
+            </div>
+          </div>
+        </main>
+        
+        {isLoginOpen && <LoginModal onClose={() => setIsLoginOpen(false)} />}
+      </div>
+    );
+  }
+
+  // --- Main Dashboard View ---
   return (
     <div className="min-h-screen pb-20">
+      {isGuestMode && !user && (
+        <div className="bg-indigo-600 text-white px-4 py-2 text-center text-xs font-bold flex items-center justify-center gap-4">
+          <span>DEMO MODE: Data will be cleared when you refresh the page.</span>
+          <button onClick={() => setIsGuestMode(false)} className="underline hover:text-indigo-100">Exit Demo</button>
+        </div>
+      )}
+
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -308,19 +413,6 @@ const App: React.FC = () => {
                             <div className="bg-white p-3 rounded-lg border border-indigo-100 text-xs text-slate-600 italic">
                                 "Bought 50 shares of Apple at 175.00 today"
                             </div>
-                            <div className="bg-white p-3 rounded-lg border border-indigo-100 text-xs text-slate-600 italic">
-                                "Sold 10 NVDA at 910 USD from my TFSA"
-                            </div>
-                        </div>
-                    </div>
-                    <div className="mt-6 pt-6 border-t border-indigo-200">
-                        <div className="flex items-center gap-3">
-                             <div className="p-2 bg-indigo-100 rounded-lg text-indigo-600">
-                                 <Upload size={20} />
-                             </div>
-                             <div className="text-xs text-indigo-800">
-                                 <span className="font-bold">Pro Tip:</span> Upload PDF brokerage statements to import multiple transactions at once.
-                             </div>
                         </div>
                     </div>
                 </div>
@@ -343,9 +435,7 @@ const App: React.FC = () => {
         />
       )}
 
-      {isLoginOpen && (
-          <LoginModal onClose={() => setIsLoginOpen(false)} />
-      )}
+      {isLoginOpen && <LoginModal onClose={() => setIsLoginOpen(false)} />}
     </div>
   );
 };
