@@ -114,3 +114,38 @@ export const parseDocumentsWithAI = async (files: { mimeType: string; data: stri
     throw error;
   }
 };
+
+/**
+ * Fetch current market prices using Google Search grounding.
+ */
+export const fetchCurrentPrices = async (symbols: string[]): Promise<{ prices: Record<string, number>, sources: any[] }> => {
+  if (symbols.length === 0) return { prices: {}, sources: [] };
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `Provide the current (today's) market price for the following stock ticker symbols: ${symbols.join(', ')}. 
+      Please respond with a JSON object where keys are the symbols and values are the current prices as numbers. 
+      If you cannot find a price, set it to null.`,
+      config: {
+        tools: [{ googleSearch: {} }],
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: symbols.reduce((acc: any, sym) => {
+            acc[sym] = { type: Type.NUMBER, description: `Current price of ${sym}` };
+            return acc;
+          }, {}),
+        }
+      }
+    });
+
+    const prices = response.text ? JSON.parse(response.text) : {};
+    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+
+    return { prices, sources };
+  } catch (error) {
+    console.error("Error fetching live prices:", error);
+    return { prices: {}, sources: [] };
+  }
+};
