@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 
 /**
@@ -37,6 +38,7 @@ export const parseTransactionWithAI = async (input: string): Promise<any> => {
       }
     });
 
+    // Access the .text property directly (property, not a method).
     if (response.text) {
       return JSON.parse(response.text);
     }
@@ -56,8 +58,9 @@ export const parseDocumentsWithAI = async (files: { mimeType: string; data: stri
       }
     }));
 
+    // Use gemini-3-pro-preview for complex reasoning and multi-document analysis tasks.
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3-pro-preview",
       contents: {
         parts: [
           ...parts,
@@ -122,25 +125,34 @@ export const fetchCurrentPrices = async (symbols: string[]): Promise<{ prices: R
   if (symbols.length === 0) return { prices: {}, sources: [] };
 
   try {
+    // Search grounding is a complex task; upgrade to gemini-3-pro-preview.
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3-pro-preview",
       contents: `Provide the current (today's) market price for the following stock ticker symbols: ${symbols.join(', ')}. 
       Please respond with a JSON object where keys are the symbols and values are the current prices as numbers. 
       If you cannot find a price, set it to null.`,
       config: {
         tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: symbols.reduce((acc: any, sym) => {
-            acc[sym] = { type: Type.NUMBER, description: `Current price of ${sym}` };
-            return acc;
-          }, {}),
-        }
+        // Grounding Metadata will contain the source citations.
       }
     });
 
-    const prices = response.text ? JSON.parse(response.text) : {};
+    // Guidelines for Search Grounding: "The output response.text may not be in JSON format; do not attempt to parse it as JSON."
+    // We use a regex to safely extract only the JSON part from the response text, as citations are often appended.
+    let prices = {};
+    const text = response.text;
+    if (text) {
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          prices = JSON.parse(jsonMatch[0]);
+        }
+      } catch (e) {
+        console.warn("Failed to extract JSON from grounded search response:", text);
+      }
+    }
+    
+    // Extract sources for display as required by search grounding guidelines.
     const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
 
     return { prices, sources };

@@ -1,12 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { LogOut, User as UserIcon, Settings, ChevronDown } from 'lucide-react';
+import { LogOut, User as UserIcon, Database, ChevronDown, Download } from 'lucide-react';
 
 interface UserMenuProps {
   onLoginClick: () => void;
+  onManageDataClick: () => void;
 }
 
-const UserMenu: React.FC<UserMenuProps> = ({ onLoginClick }) => {
+const UserMenu: React.FC<UserMenuProps> = ({ onLoginClick, onManageDataClick }) => {
   const { user, logout } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -59,8 +60,15 @@ const UserMenu: React.FC<UserMenuProps> = ({ onLoginClick }) => {
           <button className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">
             <UserIcon size={16} className="text-slate-400" /> Profile
           </button>
-          <button className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-            <Settings size={16} className="text-slate-400" /> Settings
+          
+          <button 
+            onClick={() => {
+              onManageDataClick();
+              setIsOpen(false);
+            }}
+            className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+          >
+            <Database size={16} className="text-slate-400" /> Data Management
           </button>
           
           <div className="border-t border-slate-100 mt-1 pt-1">
