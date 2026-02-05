@@ -2,10 +2,9 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
 /**
- * Strictly adhering to initialization guidelines:
- * Always use const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+ * Helper to get an initialized AI instance.
  */
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 /**
  * Helper to reliably parse JSON from LLM responses which might include markdown or preamble.
@@ -25,13 +24,14 @@ const cleanAndParseJSON = (text: string | undefined): any => {
   try {
     return JSON.parse(clean);
   } catch (e) {
-    console.error("Failed to parse Gemini response:", text);
+    console.error("Failed to parse Gemini response as JSON. Original text:", text);
     return null;
   }
 };
 
 export const parseTransactionWithAI = async (input: string): Promise<any> => {
   try {
+    const ai = getAI();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `Parse the following stock transaction details from the user input into a structured JSON object. 
@@ -70,12 +70,10 @@ export const parseTransactionWithAI = async (input: string): Promise<any> => {
 
 export const parseDocumentsWithAI = async (files: { mimeType: string; data: string }[]): Promise<any[]> => {
   try {
+    const ai = getAI();
     const parts = files.map(file => {
-      // Robust handling for CSV/Text files: Send as text parts rather than inlineData blobs.
-      // This avoids MIME type compatibility issues with the Vision/Multimodal encoder.
       if (file.mimeType.includes('csv') || file.mimeType.includes('text') || file.mimeType.includes('excel')) {
         try {
-          // Decode base64 to text
           const textContent = new TextDecoder().decode(
             Uint8Array.from(atob(file.data), c => c.charCodeAt(0))
           );
@@ -87,7 +85,6 @@ export const parseDocumentsWithAI = async (files: { mimeType: string; data: stri
         }
       }
 
-      // Default: Send as inlineData (Images, PDFs)
       return {
         inlineData: {
           mimeType: file.mimeType,
@@ -96,38 +93,22 @@ export const parseDocumentsWithAI = async (files: { mimeType: string; data: stri
       };
     });
 
-    // Use gemini-3-pro-preview for complex reasoning and multi-document analysis tasks.
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3-pro-preview",
       contents: {
         parts: [
           ...parts,
           {
-            text: `Analyze the provided documents (images, PDFs, or CSVs) and extract all stock purchase or sale transactions.
-            
+            text: `Analyze the provided documents and extract all stock purchase or sale transactions.
             Return a JSON ARRAY of transactions.
-            
-            For each transaction found:
-            1. **Date**: Extract the trade date or settlement date formatted as YYYY-MM-DD.
-            2. **Type**: Identify if it is a BUY or SELL. Normalize strictly to "BUY" or "SELL".
-            3. **Symbol**: Extract the ticker symbol. If the symbol is not explicitly listed, INFER it from the Company Name (e.g., "Bank of Nova Scotia" -> "BNS").
-            4. **Name**: The full company name.
-            5. **Shares**: The quantity of shares.
-            6. **Price**: The price per share.
-            7. **Account**: The account type or number (e.g., "TFSA", "RRSP", "Cash", or "669-747...").
-            8. **Currency**: Extract currency (e.g., USD, CAD). If price shows "C$" or similar, use CAD.
-            9. **Exchange**: Infer the exchange if possible (e.g., TSX for Canadian stocks, NASDAQ/NYSE for US), otherwise leave null.
-
-            Ignore non-trade rows like dividends, interest, or headers.
-            `
+            Normalize strictly to "BUY" or "SELL". Infer tickers from names if needed.`
           }
         ]
       },
       config: {
         responseMimeType: "application/json",
-        // Adding a thinking level can further improve accuracy for messy CSVs/PDFs
-        thinking: {
-          level: "medium" 
+        thinkingConfig: {
+          thinkingBudget: 4000 
         },
         responseSchema: {
           type: Type.ARRAY,
@@ -160,49 +141,40 @@ export const parseDocumentsWithAI = async (files: { mimeType: string; data: stri
 
 /**
  * Fetch current market prices using Google Search grounding.
+ * Upgraded to gemini-3-pro-preview for complex data extraction.
  */
 export const fetchCurrentPrices = async (symbols: string[]): Promise<{ prices: Record<string, number>, sources: any[] }> => {
   if (symbols.length === 0) return { prices: {}, sources: [] };
 
   try {
-    // Search grounding is a complex task; upgrade to gemini-3-pro-preview.
+    const ai = getAI();
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `You are a financial data API.
-      Task: Get the realtime price for these tickers: ${symbols.join(', ')}.
+      model: "gemini-3-pro-preview",
+      contents: `Get the exact realtime market price for these tickers: ${symbols.join(', ')}.
       
-      Output strictly valid JSON:
-      {
-        "AAPL": 150.25,
-        "TSLA": 200.50
-      }
+      Output the data as a JSON object where keys are the ticker symbols and values are the current share prices as numbers.
+      Example: {"AAPL": 182.50, "TSLA": 175.20}
       
-      Rules:
-      1. Use the EXACT ticker symbols provided as keys.
-      2. Values must be numbers.
-      3. No markdown formatting.
-      4. If a price is unavailable, use null.
-      `,
+      Use strictly valid JSON format. If a price is found in a range (e.g. "between 100-110"), use the most recent spot price.`,
       config: {
         tools: [{ googleSearch: {} }],
-        // Grounding Metadata will contain the source citations.
+        responseMimeType: "application/json",
+        thinkingConfig: {
+          thinkingBudget: 2000
+        }
       }
     });
 
-    // Use the robust parser
     const rawPrices = cleanAndParseJSON(response.text) || {};
-    
-    // Normalize keys to uppercase to match application state
     const normalizedPrices: Record<string, number> = {};
+    
     Object.entries(rawPrices).forEach(([key, value]) => {
         if (value !== null && typeof value === 'number') {
             normalizedPrices[key.toUpperCase()] = value;
         }
     });
     
-    // Extract sources for display as required by search grounding guidelines.
     const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-
     return { prices: normalizedPrices, sources };
   } catch (error) {
     console.error("Error fetching live prices:", error);
