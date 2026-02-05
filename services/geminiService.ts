@@ -98,7 +98,7 @@ export const parseDocumentsWithAI = async (files: { mimeType: string; data: stri
 
     // Use gemini-3-pro-preview for complex reasoning and multi-document analysis tasks.
     const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
+      model: "gemini-3-flash-preview",
       contents: {
         parts: [
           ...parts,
@@ -125,6 +125,10 @@ export const parseDocumentsWithAI = async (files: { mimeType: string; data: stri
       },
       config: {
         responseMimeType: "application/json",
+        // Adding a thinking level can further improve accuracy for messy CSVs/PDFs
+        thinking: {
+          level: "medium" 
+        },
         responseSchema: {
           type: Type.ARRAY,
           items: {
@@ -163,7 +167,7 @@ export const fetchCurrentPrices = async (symbols: string[]): Promise<{ prices: R
   try {
     // Search grounding is a complex task; upgrade to gemini-3-pro-preview.
     const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
+      model: "gemini-3-flash-preview",
       contents: `You are a financial data API.
       Task: Get the realtime price for these tickers: ${symbols.join(', ')}.
       
