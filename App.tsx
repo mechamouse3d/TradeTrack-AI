@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Transaction, StockSummary, PortfolioStats } from './types';
 import StatsCards from './components/StatsCards';
 import TransactionForm from './components/TransactionForm';
@@ -25,14 +25,29 @@ const App: React.FC = () => {
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [isRefreshingPrices, setIsRefreshingPrices] = useState(false);
   const [priceError, setPriceError] = useState<string | null>(null);
+  const [cooldownRemaining, setCooldownRemaining] = useState<number>(0);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
 
-  // State for UI
+  // UI state
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isDataMgmtOpen, setIsDataMgmtOpen] = useState(false);
+
+  // Refs for tracking and concurrency control
+  const isFetchingRef = useRef(false);
+  const fetchedInSession = useRef<Set<string>>(new Set());
+
+  // Cooldown timer effect
+  useEffect(() => {
+    if (cooldownRemaining > 0) {
+      const timer = setTimeout(() => setCooldownRemaining(c => c - 1), 1000);
+      return () => clearTimeout(timer);
+    } else if (cooldownRemaining === 0 && priceError?.includes("Limit")) {
+        setPriceError(null);
+    }
+  }, [cooldownRemaining, priceError]);
 
   // 1. User-Specific Data Loading
   useEffect(() => {
@@ -44,6 +59,7 @@ const App: React.FC = () => {
         setTransactions([]);
         setCurrentPrices({});
         setPriceSources([]);
+        fetchedInSession.current.clear();
       }
       setIsDataLoaded(true);
       return;
@@ -57,44 +73,57 @@ const App: React.FC = () => {
     if (savedTx) setTransactions(JSON.parse(savedTx));
     else setTransactions([]);
 
-    if (savedPrices) setCurrentPrices(JSON.parse(savedPrices));
+    if (savedPrices) {
+        const parsed = JSON.parse(savedPrices);
+        setCurrentPrices(parsed);
+        Object.keys(parsed).forEach(k => fetchedInSession.current.add(k));
+    }
     
     setIsDataLoaded(true);
   }, [user, isAuthLoading, isGuestMode]);
 
-  // 2. Dynamic Price Fetching
+  // 2. Market Price Fetching
   const portfolioSymbols = useMemo(() => {
-    const symbols = new Set(transactions.map(t => t.symbol.toUpperCase().trim()));
+    const symbols = new Set(transactions.map(t => (t.symbol || 'UNKNOWN').toUpperCase().trim()));
     return Array.from(symbols);
   }, [transactions]);
 
-  const updateMarketPrices = async (symbolsToFetch: string[]) => {
-    if (symbolsToFetch.length === 0) return;
+  const updateMarketPrices = async (symbolsToFetch: string[], isManual = false) => {
+    if (isFetchingRef.current || symbolsToFetch.length === 0 || cooldownRemaining > 0) return;
+    
+    // EXTREMELY CONSERVATIVE: Only fetch symbols that don't already have a price in state
+    const filtered = isManual ? symbolsToFetch : symbolsToFetch.filter(s => !currentPrices[s]);
+    if (filtered.length === 0 && !isManual) return;
+
+    isFetchingRef.current = true;
     setIsRefreshingPrices(true);
     setPriceError(null);
+    
     try {
-      const { prices, sources } = await fetchCurrentPrices(symbolsToFetch);
+      const { prices, sources } = await fetchCurrentPrices(filtered);
       setCurrentPrices(prev => ({ ...prev, ...prices }));
       setPriceSources(sources);
+      filtered.forEach(s => fetchedInSession.current.add(s));
     } catch (err: any) {
-      console.error("Failed to fetch market data", err);
-      const msg = err?.message || "";
-      if (msg.includes("429")) {
-        setPriceError("Rate limit hit. Prices will retry shortly.");
+      console.error("Market data fetch failed", err);
+      const msg = err?.message || JSON.stringify(err);
+      
+      if (msg.includes("429") || msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED")) {
+        setPriceError("Quota Limit - Waiting 60s");
+        setCooldownRemaining(60); // Aggressive cooldown for rate limits
       } else {
-        setPriceError("Market data unavailable.");
+        setPriceError("Price fetch failed");
       }
     } finally {
       setIsRefreshingPrices(false);
+      isFetchingRef.current = false;
     }
   };
 
   useEffect(() => {
     if (isDataLoaded && portfolioSymbols.length > 0) {
-      const missingPrices = portfolioSymbols.filter(s => currentPrices[s] === undefined);
-      if (missingPrices.length > 0) {
+        // Initial load fetch
         updateMarketPrices(portfolioSymbols);
-      }
     }
   }, [portfolioSymbols, isDataLoaded]);
 
@@ -108,11 +137,14 @@ const App: React.FC = () => {
     setLastSaved(new Date());
   }, [transactions, currentPrices, user, isDataLoaded, isAuthLoading]);
 
+  // --- Handlers ---
+
   const handleSaveTransaction = (transactionData: Transaction | Omit<Transaction, 'id'>) => {
     const normalizedData = {
         ...transactionData,
-        symbol: transactionData.symbol.toUpperCase().trim(),
-        type: transactionData.type.toString().toUpperCase().trim() as 'BUY' | 'SELL'
+        symbol: (transactionData.symbol || 'UNKNOWN').toUpperCase().trim(),
+        exchange: (transactionData.exchange || 'UNKNOWN').toUpperCase().trim(),
+        type: (transactionData.type || 'BUY').toString().toUpperCase().trim() as 'BUY' | 'SELL'
     };
 
     if ('id' in normalizedData) {
@@ -127,92 +159,57 @@ const App: React.FC = () => {
 
   const clearUserCache = () => {
     if (!user) return;
-    const txKey = `transactions_${user.id}`;
-    const pricesKey = `prices_${user.id}`;
-    localStorage.removeItem(txKey);
-    localStorage.removeItem(pricesKey);
+    localStorage.removeItem(`transactions_${user.id}`);
+    localStorage.removeItem(`prices_${user.id}`);
     setTransactions([]);
     setCurrentPrices({});
+    fetchedInSession.current.clear();
     setIsDataMgmtOpen(false);
   };
 
-  const exportUserData = () => {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(transactions, null, 2));
-    const downloadAnchorNode = document.createElement('a');
-    downloadAnchorNode.setAttribute("href", dataStr);
-    downloadAnchorNode.setAttribute("download", `tradetrack_export_${new Date().toISOString().split('T')[0]}.json`);
-    document.body.appendChild(downloadAnchorNode);
-    downloadAnchorNode.click();
-    downloadAnchorNode.remove();
-  };
-
-  const handleEditTransaction = (transaction: Transaction) => {
-    setEditingTransaction(transaction);
-    setIsFormOpen(true);
-  };
-
-  const openAddTransaction = () => {
-    setEditingTransaction(null);
-    setIsFormOpen(true);
-  };
-
   const handleBulkImport = (newTransactions: Omit<Transaction, 'id'>[]) => {
-      const transactionsWithIds = newTransactions.map(t => {
-          const rawType = t.type ? t.type.toString().toUpperCase() : 'BUY';
-          const normalizedType = rawType.includes('SELL') || rawType.includes('SOLD') ? 'SELL' : 'BUY';
-          return {
-            ...t,
-            type: normalizedType as 'BUY' | 'SELL',
-            symbol: t.symbol.toUpperCase().trim(),
-            id: Math.random().toString(36).substr(2, 9)
-          };
-      });
+      const transactionsWithIds = newTransactions.map(t => ({
+          ...t,
+          type: (t.type?.toString().toUpperCase().includes('SELL') ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
+          symbol: (t.symbol || 'UNKNOWN').toUpperCase().trim(),
+          exchange: (t.exchange || 'UNKNOWN').toUpperCase().trim(),
+          id: Math.random().toString(36).substr(2, 9)
+      }));
       setTransactions(prev => [...prev, ...transactionsWithIds]);
   };
 
-  const deleteTransaction = (id: string) => {
-    setTransactions(prev => prev.filter(t => t.id !== id));
-  };
+  // --- Calculations ---
 
   const { portfolio, stats } = useMemo(() => {
     const groups: Record<string, Transaction[]> = {};
     transactions.forEach(t => {
-      const symbolKey = t.symbol.toUpperCase().trim();
+      const symbolKey = (t.symbol || 'UNKNOWN').toUpperCase().trim();
       if (!groups[symbolKey]) groups[symbolKey] = [];
       groups[symbolKey].push(t);
     });
 
     const stockSummaries: StockSummary[] = [];
-    let totalRealizedPL = 0;
-    let totalCostBasis = 0;
-    let totalValue = 0;
-    let totalUnrealizedPL = 0;
+    let totalRealizedPL = 0, totalCostBasis = 0, totalValue = 0, totalUnrealizedPL = 0;
 
     Object.entries(groups).forEach(([symbol, txs]) => {
       txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-      let sharesHeld = 0;
-      let totalCost = 0;
-      let realizedPL = 0;
+      let sharesHeld = 0, totalCost = 0, realizedPL = 0;
 
       txs.forEach(t => {
-        const shares = Number(t.shares);
-        const price = Number(t.price);
-        const type = (t.type || '').toString().toUpperCase().trim();
+        const shares = Number(t.shares), price = Number(t.price);
         if (isNaN(shares) || isNaN(price)) return;
-        if (type === 'BUY') {
+        if (t.type === 'BUY') {
           sharesHeld += shares;
           totalCost += shares * price;
-        } else if (type === 'SELL') {
-          const avgCostPerShare = sharesHeld > 0 ? totalCost / sharesHeld : 0;
-          const costOfSoldShares = shares * avgCostPerShare;
-          realizedPL += (shares * price - costOfSoldShares);
+        } else {
+          const avg = sharesHeld > 0 ? totalCost / sharesHeld : 0;
+          realizedPL += (shares * price - (shares * avg));
           sharesHeld -= shares;
-          totalCost -= costOfSoldShares;
+          totalCost -= (shares * avg);
         }
       });
 
       if (sharesHeld < 0.000001) { sharesHeld = 0; totalCost = 0; }
-      const avgCost = sharesHeld > 0 ? totalCost / sharesHeld : 0;
       const currentPrice = currentPrices[symbol] || null;
       totalRealizedPL += realizedPL;
       totalCostBasis += totalCost;
@@ -221,42 +218,33 @@ const App: React.FC = () => {
           const marketVal = sharesHeld * currentPrice;
           totalValue += marketVal;
           totalUnrealizedPL += (marketVal - totalCost);
-      } else {
-           totalValue += totalCost;
-      }
+      } else { totalValue += totalCost; }
 
       stockSummaries.push({
         symbol,
         name: txs[0]?.name || symbol,
         totalShares: sharesHeld,
-        avgCost: avgCost,
-        currentPrice: currentPrice,
+        avgCost: sharesHeld > 0 ? totalCost / sharesHeld : 0,
+        currentPrice,
         totalInvested: totalCost,
-        realizedPL: realizedPL,
+        realizedPL,
         transactions: txs
       });
     });
 
-    stockSummaries.sort((a, b) => a.name.localeCompare(b.name));
-    return {
-      portfolio: stockSummaries,
-      stats: { totalValue, totalCostBasis, totalRealizedPL, totalUnrealizedPL }
-    };
+    return { portfolio: stockSummaries.sort((a, b) => a.symbol.localeCompare(b.symbol)), stats: { totalValue, totalCostBasis, totalRealizedPL, totalUnrealizedPL } };
   }, [transactions, currentPrices]);
 
   const allocationData = portfolio
     .filter(s => s.totalShares > 0 && s.currentPrice)
-    .map(s => ({
-      name: s.symbol,
-      value: (s.currentPrice || 0) * s.totalShares
-    }));
+    .map(s => ({ name: s.symbol, value: (s.currentPrice || 0) * s.totalShares }));
 
   if (isAuthLoading) {
       return (
           <div className="min-h-screen flex items-center justify-center bg-slate-50">
               <div className="flex flex-col items-center gap-2">
                   <Loader2 className="animate-spin text-indigo-600" size={32} />
-                  <p className="text-slate-500 font-medium">Authenticating Portfolio...</p>
+                  <p className="text-slate-500 font-medium">Authenticating...</p>
               </div>
           </div>
       );
@@ -265,22 +253,20 @@ const App: React.FC = () => {
   if (!user && !isGuestMode) {
     return (
       <div className="min-h-screen bg-[#FDFDFF]">
-        <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-indigo-50/50 rounded-full blur-3xl -z-10 -translate-y-1/2 translate-x-1/2" />
-        <header className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between relative">
+        <header className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="bg-indigo-600 p-2 rounded-xl text-white shadow-lg shadow-indigo-200"><TrendingUp size={24} /></div>
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight">TradeTrack AI</h1>
+            <div className="bg-indigo-600 p-2 rounded-xl text-white shadow-lg"><TrendingUp size={24} /></div>
+            <h1 className="text-xl font-bold text-slate-900">TradeTrack AI</h1>
           </div>
-          <button onClick={() => setIsLoginOpen(true)} className="px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold transition-all shadow-xl shadow-slate-200">Sign In</button>
+          <button onClick={() => setIsLoginOpen(true)} className="px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold transition-all">Sign In</button>
         </header>
-
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 lg:py-32 relative text-center">
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-indigo-50 text-indigo-700 rounded-full text-sm font-bold border border-indigo-100/50 shadow-sm mb-10"><Sparkles size={16} /> Powered by Gemini Flash 3</div>
-            <h2 className="text-5xl lg:text-7xl font-extrabold text-slate-900 leading-[1.1] tracking-tight mb-8">Your portfolio, <br /><span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-blue-500">smarter than ever.</span></h2>
-            <p className="text-xl text-slate-600 leading-relaxed mx-auto max-w-2xl mb-12">Securely track trades across any exchange, calculate FIFO P/L instantly, and persist data to your private account.</p>
-            <div className="flex flex-wrap justify-center gap-5">
-              <button onClick={() => setIsLoginOpen(true)} className="px-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-bold text-lg transition-all shadow-2xl shadow-indigo-200 flex items-center gap-2">Get Started Free <ArrowRight size={20} /></button>
-              <button onClick={() => setIsGuestMode(true)} className="px-8 py-4 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-2xl font-bold text-lg transition-all shadow-sm">Try Live Demo</button>
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-32 text-center">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-indigo-50 text-indigo-700 rounded-full text-sm font-bold mb-10"><Sparkles size={16} /> Gemini 3 Flash Core</div>
+            <h2 className="text-5xl lg:text-7xl font-extrabold text-slate-900 leading-[1.1] mb-8">Portfolio Tracking <br /><span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-blue-500">Simplified.</span></h2>
+            <p className="text-xl text-slate-600 max-w-2xl mx-auto mb-12">Automated data extraction, real-time market grounding, and secure private storage.</p>
+            <div className="flex justify-center gap-5">
+              <button onClick={() => setIsLoginOpen(true)} className="px-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-bold text-lg shadow-2xl flex items-center gap-2">Get Started <ArrowRight size={20} /></button>
+              <button onClick={() => setIsGuestMode(true)} className="px-8 py-4 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-2xl font-bold text-lg">Demo Mode</button>
             </div>
         </main>
         {isLoginOpen && <LoginModal onClose={() => setIsLoginOpen(false)} />}
@@ -290,53 +276,43 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen pb-20 bg-slate-50">
-      {isGuestMode && !user && (
-        <div className="bg-slate-800 text-white px-4 py-2.5 text-center text-xs font-bold flex items-center justify-center gap-4 sticky top-0 z-40">
-          <CloudOff size={14} className="text-amber-400" />
-          <span>DEMO MODE: No data is being saved to an account.</span>
-          <button onClick={() => setIsGuestMode(false)} className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded-full transition-colors">Sign In to Save</button>
-        </div>
-      )}
-
-      <header className={`bg-white border-b border-slate-200 sticky z-30 ${isGuestMode && !user ? 'top-10' : 'top-0'}`}>
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <div className="bg-indigo-600 p-2 rounded-lg text-white"><TrendingUp size={24} /></div>
-              <h1 className="text-xl font-bold text-slate-900 tracking-tight">TradeTrack AI</h1>
+              <div className="bg-indigo-600 p-2 rounded-lg text-white"><TrendingUp size={20} /></div>
+              <h1 className="text-lg font-bold text-slate-900 hidden sm:block">TradeTrack AI</h1>
             </div>
-            
             {user && (
-              <div className="hidden lg:flex items-center gap-3 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-full">
-                <div className="flex items-center gap-1.5 text-emerald-600">
-                  <Cloud size={14} />
-                  <span className="text-[10px] font-black uppercase tracking-wider">Sync Active</span>
-                </div>
-                <div className="w-px h-3 bg-slate-200"></div>
-                <div className="flex items-center gap-1.5 text-slate-400">
-                  <Clock size={12} />
-                  <span className="text-[10px] font-medium">
-                    {lastSaved ? `Saved ${lastSaved.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Saving...'}
-                  </span>
-                </div>
+              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1 rounded-full text-[10px] text-slate-500 font-bold uppercase tracking-widest">
+                <Cloud size={12} className="text-indigo-400" /> Auto-Sync: {lastSaved ? lastSaved.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--'}
               </div>
             )}
           </div>
 
           <div className="flex items-center gap-3">
               <div className="flex flex-col items-end mr-2">
-                {priceError && <span className="text-[9px] text-rose-500 font-bold uppercase animate-pulse">{priceError}</span>}
-                <button onClick={() => updateMarketPrices(portfolioSymbols)} disabled={isRefreshingPrices} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors" title="Refresh Live Prices">
+                {priceError && (
+                    <div className="flex items-center gap-1.5 text-rose-500">
+                         {cooldownRemaining > 0 && <span className="text-[10px] font-black bg-rose-50 px-1.5 rounded leading-none py-1">{cooldownRemaining}s</span>}
+                         <span className="text-[9px] font-bold uppercase">{priceError}</span>
+                    </div>
+                )}
+                <button 
+                  onClick={() => updateMarketPrices(portfolioSymbols, true)} 
+                  disabled={isRefreshingPrices || cooldownRemaining > 0} 
+                  className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors disabled:opacity-30" 
+                  title="Manual Refresh"
+                >
                    <RefreshCw size={18} className={isRefreshingPrices ? 'animate-spin' : ''} />
                 </button>
               </div>
-              <button onClick={() => setIsImportOpen(true)} className="hidden md:flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 px-3.5 py-2 rounded-xl font-medium transition-colors text-sm">
-                <Upload size={16} /> Import
+              <button onClick={() => setIsImportOpen(true)} className="hidden sm:flex items-center gap-2 bg-white border border-slate-300 px-3.5 py-1.5 rounded-xl font-medium text-xs">
+                <Upload size={14} /> Import
               </button>
-              <button onClick={openAddTransaction} className="hidden md:flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-3.5 py-2 rounded-xl font-medium transition-colors text-sm shadow-md">
-                <Plus size={16} /> Transaction
+              <button onClick={() => setIsFormOpen(true)} className="flex items-center gap-2 bg-slate-900 text-white px-3.5 py-1.5 rounded-xl font-medium text-xs shadow-md">
+                <Plus size={14} /> New
               </button>
-              <div className="w-px h-6 bg-slate-200 mx-1 hidden md:block"></div>
               <UserMenu onLoginClick={() => setIsLoginOpen(true)} onManageDataClick={() => setIsDataMgmtOpen(true)} />
           </div>
         </div>
@@ -346,72 +322,78 @@ const App: React.FC = () => {
         <StatsCards stats={stats} />
 
         <div className="w-full">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Database size={20} className="text-indigo-500" /> Current Holdings</h2>
-              <div className="flex items-center gap-4">
-                {priceSources.length > 0 && (
-                  <div className="hidden lg:flex items-center gap-2 text-xs text-slate-400">
-                    <span className="font-bold uppercase">Sources:</span>
-                    <div className="flex gap-2">
-                      {priceSources.slice(0, 2).map((chunk, i) => (
-                        <a key={i} href={chunk.web?.uri} target="_blank" rel="noopener noreferrer" className="hover:text-indigo-500 flex items-center gap-1"><ExternalLink size={10} /> {i+1}</a>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <span className="text-[10px] text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg font-bold uppercase tracking-tight flex items-center gap-1">
-                  <ShieldCheck size={12} /> User-Encrypted Cache
-                </span>
+            <div className="flex items-center justify-between mb-4 px-2">
+              <h2 className="text-sm font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">Holdings</h2>
+              <div className="flex items-center gap-2 text-[10px] text-indigo-400 bg-indigo-50/50 px-2.5 py-1 rounded-full font-bold">
+                 <ShieldCheck size={12} /> Encrypted Storage Active
               </div>
             </div>
-            <PortfolioTable portfolio={portfolio} onDelete={deleteTransaction} onEdit={handleEditTransaction} />
+            <PortfolioTable portfolio={portfolio} onDelete={id => setTransactions(t => t.filter(x => x.id !== id))} onEdit={t => { setEditingTransaction(t); setIsFormOpen(true); }} />
+            
+            {priceSources.length > 0 && (
+              <div className="mt-4 px-2 py-3 bg-slate-100/50 rounded-xl border border-slate-200/60">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                  <ExternalLink size={12} className="text-indigo-400" /> Price Data Sources (Google Search)
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {priceSources.map((chunk, idx) => (
+                    chunk.web && (
+                      <a 
+                        key={idx} 
+                        href={chunk.web.uri} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-indigo-600 hover:bg-indigo-100 bg-indigo-50 border border-indigo-100 px-2 py-1 rounded-md flex items-center gap-1 transition-all"
+                      >
+                        {chunk.web.title || 'Market Source'} <ExternalLink size={10} />
+                      </a>
+                    )
+                  ))}
+                </div>
+              </div>
+            )}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                <h3 className="text-slate-800 text-sm font-bold flex items-center gap-2 mb-6"><PieChartIcon size={18} className="text-indigo-500" /> Portfolio Allocation</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
-                    <div className="h-64 w-full">
-                        {allocationData.length > 0 ? (
-                            <ResponsiveContainer width="100%" height="100%">
-                                <RechartsPieChart>
-                                <Pie data={allocationData} cx="50%" cy="50%" innerRadius={60} outerRadius={90} paddingAngle={8} dataKey="value" stroke="none">
-                                    {allocationData.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                <h3 className="text-slate-800 text-xs font-black uppercase tracking-widest mb-6 flex items-center gap-2">
+                    <PieChartIcon size={14} className="text-indigo-500" /> Allocation
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center h-64">
+                    {allocationData.length > 0 ? (
+                        <>
+                        <ResponsiveContainer width="100%" height="100%">
+                            <RechartsPieChart>
+                                <Pie data={allocationData} cx="50%" cy="50%" innerRadius={55} outerRadius={80} paddingAngle={8} dataKey="value" stroke="none">
+                                    {allocationData.map((_, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
                                 </Pie>
-                                <Tooltip formatter={(value: number) => `$${value.toLocaleString()}`} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
-                                </RechartsPieChart>
-                            </ResponsiveContainer>
-                        ) : (
-                            <div className="h-full flex items-center justify-center text-slate-400 text-sm italic border-2 border-dashed border-slate-100 rounded-2xl">No active holdings.</div>
-                        )}
-                    </div>
-                    <div className="space-y-3">
-                        {allocationData.map((entry, index) => (
-                            <div key={entry.name} className="flex items-center justify-between text-sm p-2 hover:bg-slate-50 rounded-lg transition-colors">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }}></div>
-                                    <span className="text-slate-700 font-bold">{entry.name}</span>
+                                <Tooltip formatter={(v: number) => `$${v.toLocaleString()}`} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                            </RechartsPieChart>
+                        </ResponsiveContainer>
+                        <div className="space-y-2 max-h-full overflow-y-auto pr-2">
+                            {allocationData.map((e, i) => (
+                                <div key={e.name} className="flex items-center justify-between text-xs p-2.5 bg-slate-50/50 rounded-lg">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }}></div>
+                                        <span className="text-slate-700 font-bold">{e.name}</span>
+                                    </div>
+                                    <span className="text-slate-900 font-medium">${e.value.toLocaleString()}</span>
                                 </div>
-                                <div className="text-right">
-                                    <div className="text-slate-900 font-medium">${entry.value.toLocaleString()}</div>
-                                    <div className="text-[10px] text-slate-400 font-bold">{((entry.value / stats.totalValue) * 100).toFixed(1)}%</div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
+                            ))}
+                        </div>
+                        </>
+                    ) : (
+                        <div className="col-span-2 h-full flex items-center justify-center text-slate-300 text-xs italic border-2 border-dashed border-slate-100 rounded-2xl">No holdings to visualize.</div>
+                    )}
                 </div>
             </div>
-            <div className="bg-indigo-600 p-8 rounded-2xl text-white shadow-xl flex flex-col justify-between h-full relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-4 opacity-10"><HardDrive size={120} /></div>
+            <div className="bg-indigo-600 p-8 rounded-2xl text-white shadow-xl relative overflow-hidden flex flex-col justify-between">
+                <div className="absolute -top-10 -right-10 opacity-5"><HardDrive size={200} /></div>
                 <div>
-                    <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center mb-6"><ShieldCheck size={24} /></div>
-                    <h4 className="text-2xl font-bold mb-4">Secure Cache</h4>
-                    <p className="text-indigo-100 text-sm leading-relaxed mb-6">Your data is stored locally but tied to your unique Auth0 account. You can export or clear your private cache at any time.</p>
+                    <h4 className="text-xl font-black uppercase tracking-widest mb-4">Secure Vault</h4>
+                    <p className="text-indigo-100 text-sm leading-relaxed mb-6">Your trade data is persisted locally to your Auth0 profile ID. Export or wipe your data anytime in the Management panel.</p>
                 </div>
-                <div className="flex flex-col gap-3">
-                    <button onClick={openAddTransaction} className="w-full py-4 bg-white text-indigo-600 rounded-xl font-bold hover:bg-indigo-50 transition-colors shadow-lg flex items-center justify-center gap-2"><Plus size={20} /> New Transaction</button>
-                    <button onClick={() => setIsDataMgmtOpen(true)} className="w-full py-2 bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-2">Manage Local Storage</button>
-                </div>
+                <button onClick={() => setIsDataMgmtOpen(true)} className="w-full py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition-colors backdrop-blur-sm border border-white/10">Open Data Manager</button>
             </div>
         </div>
       </main>
@@ -419,7 +401,13 @@ const App: React.FC = () => {
       {isFormOpen && <TransactionForm onSave={handleSaveTransaction} onClose={() => setIsFormOpen(false)} initialData={editingTransaction || undefined} />}
       {isImportOpen && <FileImportModal onImport={handleBulkImport} onClose={() => setIsImportOpen(false)} />}
       {isLoginOpen && <LoginModal onClose={() => setIsLoginOpen(false)} />}
-      {isDataMgmtOpen && <DataManagementModal transactionsCount={transactions.length} onClearCache={clearUserCache} onExport={exportUserData} onClose={() => setIsDataMgmtOpen(false)} />}
+      {isDataMgmtOpen && <DataManagementModal transactionsCount={transactions.length} onClearCache={clearUserCache} onExport={() => {
+          const blob = new Blob([JSON.stringify(transactions, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'tradetrack_backup.json';
+          a.click();
+      }} onClose={() => setIsDataMgmtOpen(false)} />}
     </div>
   );
 };
