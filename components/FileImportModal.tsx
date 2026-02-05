@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { Upload, X, FileText, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { Upload, X, FileText, Loader2, AlertCircle } from 'lucide-react';
 import { parseDocumentsWithAI } from '../services/geminiService';
 import { Transaction } from '../types';
 
@@ -10,7 +10,6 @@ interface FileImportModalProps {
 
 interface FileWithPreview {
   file: File;
-  preview?: string;
 }
 
 const FileImportModal: React.FC<FileImportModalProps> = ({ onImport, onClose }) => {
@@ -45,17 +44,50 @@ const FileImportModal: React.FC<FileImportModalProps> = ({ onImport, onClose }) 
     e.target.value = '';
   };
 
-  const addFiles = (newFiles: File[]) => {
-    const validFiles = newFiles.filter(file => 
-      file.type === 'application/pdf' || 
-      file.type.startsWith('image/') || 
-      file.type === 'text/csv' || 
-      file.type === 'application/vnd.ms-excel' ||
-      file.name.toLowerCase().endsWith('.csv')
-    );
+  const getMimeType = (file: File) => {
+    // Trust the browser if it's specific
+    if (file.type && file.type !== 'application/octet-stream') return file.type;
     
-    if (validFiles.length !== newFiles.length) {
-      setError("Some files were skipped. Only PDF, Images, and CSV are supported.");
+    // Fallback to extension inference
+    const name = file.name.toLowerCase();
+    if (name.endsWith('.csv')) return 'text/csv';
+    if (name.endsWith('.pdf')) return 'application/pdf';
+    if (name.endsWith('.png')) return 'image/png';
+    if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+    if (name.endsWith('.webp')) return 'image/webp';
+    
+    return 'application/octet-stream';
+  };
+
+  const addFiles = (newFiles: File[]) => {
+    const validFiles: File[] = [];
+    let errorMessage = null;
+
+    newFiles.forEach(file => {
+        // 1. Check Size (10MB Limit)
+        if (file.size > 10 * 1024 * 1024) {
+            errorMessage = `File ${file.name} is too large. Max size is 10MB.`;
+            return;
+        }
+
+        // 2. Check Type
+        const type = file.type;
+        const name = file.name.toLowerCase();
+        const isValidType = (
+            type === 'application/pdf' || name.endsWith('.pdf') ||
+            type.startsWith('image/') || name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.webp') ||
+            type === 'text/csv' || type === 'application/vnd.ms-excel' || name.endsWith('.csv')
+        );
+
+        if (isValidType) {
+            validFiles.push(file);
+        } else {
+            errorMessage = `File ${file.name} has an unsupported format.`;
+        }
+    });
+    
+    if (errorMessage) {
+      setError(errorMessage);
     } else {
       setError(null);
     }
@@ -81,7 +113,7 @@ const FileImportModal: React.FC<FileImportModalProps> = ({ onImport, onClose }) 
             // Remove the data URL prefix (e.g., "data:image/jpeg;base64,")
             const data = base64String.split(',')[1];
             resolve({
-              mimeType: f.file.type || (f.file.name.endsWith('.csv') ? 'text/csv' : 'application/octet-stream'),
+              mimeType: getMimeType(f.file),
               data: data
             });
           };
@@ -97,12 +129,21 @@ const FileImportModal: React.FC<FileImportModalProps> = ({ onImport, onClose }) 
         onImport(transactions);
         onClose();
       } else {
-        setError("No transactions found in the provided documents. Please ensure the files contain clear trade details.");
+        setError("No transactions found. Ensure the document contains clear trade details (Buy/Sell, Symbol, Price, Date).");
       }
 
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Failed to process files. The document format might be unsupported or the AI could not extract the data.");
+      // Display the actual error message from the API or Logic
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      
+      if (msg.includes("403") || msg.includes("API key")) {
+          setError("API Key Error: Please check your Google Gemini API key configuration.");
+      } else if (msg.includes("400")) {
+          setError("Bad Request: The file content might be unreadable or corrupt.");
+      } else {
+          setError(`Import Failed: ${msg}`);
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -147,7 +188,7 @@ const FileImportModal: React.FC<FileImportModalProps> = ({ onImport, onClose }) 
                    <input 
                     type="file" 
                     multiple 
-                    accept=".pdf,.csv,image/*" 
+                    accept=".pdf,.csv,image/*,.xlsx,.xls" 
                     className="hidden" 
                     id="file-upload"
                     onChange={handleFileSelect}
@@ -157,8 +198,9 @@ const FileImportModal: React.FC<FileImportModalProps> = ({ onImport, onClose }) 
            </div>
 
            {error && (
-               <div className="mb-4 p-3 bg-rose-50 text-rose-600 rounded-lg text-sm flex items-center gap-2">
-                   <AlertCircle size={16} /> {error}
+               <div className="mb-4 p-3 bg-rose-50 text-rose-600 rounded-lg text-sm flex items-start gap-2">
+                   <AlertCircle size={16} className="shrink-0 mt-0.5" /> 
+                   <span>{error}</span>
                </div>
            )}
 
