@@ -5,13 +5,14 @@ const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const cleanAndParseJSON = (text: string | undefined): any => {
   if (!text) return null;
+  // Handle markdown blocks and common conversational prefixes
   let clean = text.replace(/```json\s*|```/g, '').trim();
   const match = clean.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
   if (match) clean = match[0];
   try {
     return JSON.parse(clean);
   } catch (e) {
-    console.error("JSON Parse Error:", text);
+    console.error("JSON Parse Error. Raw Text:", text);
     return null;
   }
 };
@@ -41,23 +42,28 @@ export const parseTransactionWithAI = async (input: string): Promise<any> => {
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Parse into JSON: "${input}". Fields: date, type(BUY/SELL), symbol, name, shares, price, account, exchange, currency.`,
+      contents: `Parse this transaction into JSON: "${input}". 
+      RULES:
+      1. Map "BOUGHT" or "PURCHASED" to "BUY". 
+      2. Map "SOLD" to "SELL".
+      3. Identify currency (USD or CAD). If TSX or Canadian stock, use CAD. If NASDAQ/NYSE, use USD. Default to USD if unclear.
+      4. Fields: date, type(BUY/SELL), symbol, name, shares, price, account, exchange, currency.`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
             date: { type: Type.STRING },
-            type: { type: Type.STRING },
+            type: { type: Type.STRING, enum: ["BUY", "SELL"] },
             symbol: { type: Type.STRING },
             name: { type: Type.STRING },
             shares: { type: Type.NUMBER },
             price: { type: Type.NUMBER },
             account: { type: Type.STRING },
             exchange: { type: Type.STRING },
-            currency: { type: Type.STRING }
+            currency: { type: Type.STRING, enum: ["USD", "CAD"] }
           },
-          required: ["type", "symbol", "shares", "price"]
+          required: ["type", "symbol", "shares", "price", "currency"]
         }
       }
     });
@@ -81,7 +87,12 @@ export const parseDocumentsWithAI = async (files: { mimeType: string; data: stri
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: {
-        parts: [...parts, { text: `Return JSON array of BUY/SELL transactions. Mandatory: symbol, exchange, type, shares, price, name, date.` }]
+        parts: [...parts, { text: `Return a JSON array of BUY/SELL transactions found in these documents. 
+        MANDATORY RULES:
+        1. "type" MUST be exactly "BUY" or "SELL". (Map BOUGHT/SOLD/PURCHASED accordingly).
+        2. "currency" MUST be "USD" or "CAD". Look for symbols like $ vs C$ or exchange names (TSX vs NASDAQ).
+        3. If exchange is missing but symbol ends in .TO, exchange is TSX and currency is CAD.
+        4. Provide: symbol, exchange, type, shares, price, name, date, currency.` }]
       },
       config: {
         responseMimeType: "application/json",
@@ -91,16 +102,16 @@ export const parseDocumentsWithAI = async (files: { mimeType: string; data: stri
             type: Type.OBJECT,
             properties: {
               date: { type: Type.STRING },
-              type: { type: Type.STRING },
+              type: { type: Type.STRING, enum: ["BUY", "SELL"] },
               symbol: { type: Type.STRING },
               name: { type: Type.STRING },
               shares: { type: Type.NUMBER },
               price: { type: Type.NUMBER },
               account: { type: Type.STRING },
               exchange: { type: Type.STRING },
-              currency: { type: Type.STRING },
+              currency: { type: Type.STRING, enum: ["USD", "CAD"] },
             },
-            required: ["date", "type", "symbol", "shares", "price", "name", "exchange"]
+            required: ["date", "type", "symbol", "shares", "price", "name", "exchange", "currency"]
           }
         }
       }
@@ -118,17 +129,27 @@ export const fetchCurrentPrices = async (
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: `Stock prices for: ${symbols.join(', ')}. Please provide the data in a clear JSON format like this: {"TICKER": price}. Use current market data from Google Search.`,
+      contents: `Perform a search to find the latest real-time stock prices for these tickers: ${symbols.join(', ')}.
+      
+      MANDATORY OUTPUT FORMAT:
+      You must return ONLY a JSON object mapping ticker symbols to their current numerical price. 
+      Example: {"AAPL": 150.25, "SHOP.TO": 75.10}
+      
+      Ensure prices are in the native currency of the ticker (e.g. SHOP.TO in CAD, AAPL in USD).
+      Do not include currency symbols in the JSON values, only numbers.`,
       config: {
         tools: [{ googleSearch: {} }],
-        // responseMimeType: "application/json" is not supported when using tools like googleSearch
       }
     });
 
     const rawPrices = cleanAndParseJSON(response.text) || {};
     const normalizedPrices: Record<string, number> = {};
     Object.entries(rawPrices).forEach(([key, value]) => {
-      if (typeof value === 'number') normalizedPrices[key.toUpperCase()] = value;
+      // Ensure key is uppercase and value is a valid number
+      const price = typeof value === 'string' ? parseFloat(value.replace(/[^0-9.]/g, '')) : value;
+      if (typeof price === 'number' && !isNaN(price)) {
+        normalizedPrices[key.toUpperCase()] = price;
+      }
     });
     const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     return { prices: normalizedPrices, sources };

@@ -1,6 +1,7 @@
+
 import React, { useState } from 'react';
 import { Transaction, StockSummary } from '../types';
-import { ChevronDown, ChevronRight, Edit2, Trash2, CheckCircle2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Edit2, Trash2, CheckCircle2, Globe } from 'lucide-react';
 
 interface PortfolioTableProps {
   portfolio: StockSummary[];
@@ -9,14 +10,15 @@ interface PortfolioTableProps {
 }
 
 const PortfolioTable: React.FC<PortfolioTableProps> = ({ portfolio, onDelete, onEdit }) => {
-  // Map of symbol -> boolean to track expanded state
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
-    portfolio.reduce((acc, stock) => ({ ...acc, [stock.symbol]: true }), {})
+    portfolio.reduce((acc, stock) => ({ ...acc, [`${stock.symbol}_${stock.currency}`]: true }), {})
   );
 
-  const toggleGroup = (symbol: string) => {
-    setExpandedGroups(prev => ({ ...prev, [symbol]: !prev[symbol] }));
+  const toggleGroup = (key: string) => {
+    setExpandedGroups(prev => ({ ...prev, [key]: !prev[key] }));
   };
+
+  const getCurrencySymbol = (cur: string) => cur === 'CAD' ? 'C$' : '$';
 
   if (portfolio.length === 0) {
     return (
@@ -33,21 +35,23 @@ const PortfolioTable: React.FC<PortfolioTableProps> = ({ portfolio, onDelete, on
           <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 uppercase tracking-wider text-[10px]">
             <tr>
               <th className="px-4 py-4 w-12"></th>
-              <th className="px-4 py-4 w-[10%]">Symbol</th>
+              <th className="px-4 py-4 w-[12%]">Symbol</th>
               <th className="px-4 py-4 w-[18%]">Stock Name</th>
               <th className="px-4 py-4 text-right w-[8%]">Shares</th>
               <th className="px-4 py-4 text-right w-[10%]">Avg Price</th>
               <th className="px-4 py-4 text-right w-[10%]">Total Cost</th>
-              <th className="px-4 py-4 text-right w-[12%]">Current Price</th>
-              <th className="px-4 py-4 text-right w-[12%]">Market Value</th>
-              <th className="px-4 py-4 text-right w-[12%]">Unrealized P/L</th>
-              <th className="px-4 py-4 text-right w-[12%]">Realized Profit</th>
+              <th className="px-4 py-4 text-right w-[10%]">Current Price</th>
+              <th className="px-4 py-4 text-right w-[10%]">Market Value</th>
+              <th className="px-4 py-4 text-right w-[11%]">Unrealized P/L</th>
+              <th className="px-4 py-4 text-right w-[11%]">Realized Profit</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {portfolio.map((stock) => {
-              const isExpanded = expandedGroups[stock.symbol];
+              const groupKey = `${stock.symbol}_${stock.currency}`;
+              const isExpanded = expandedGroups[groupKey];
               const isClosed = stock.totalShares <= 0;
+              const curSym = getCurrencySymbol(stock.currency);
               
               const unrealizedPL = !isClosed && stock.currentPrice 
                 ? (stock.currentPrice - stock.avgCost) * stock.totalShares 
@@ -57,15 +61,18 @@ const PortfolioTable: React.FC<PortfolioTableProps> = ({ portfolio, onDelete, on
                 : 0;
 
               return (
-                <React.Fragment key={stock.symbol}>
+                <React.Fragment key={groupKey}>
                   {/* Summary Row */}
                   <tr className={`transition-colors ${isClosed ? 'bg-slate-50/40 hover:bg-slate-50' : 'hover:bg-slate-50'}`}>
-                    <td className="px-4 py-4 text-center cursor-pointer" onClick={() => toggleGroup(stock.symbol)}>
+                    <td className="px-4 py-4 text-center cursor-pointer" onClick={() => toggleGroup(groupKey)}>
                       {isExpanded ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex flex-col">
-                        <span className={`font-bold ${isClosed ? 'text-slate-400' : 'text-slate-900'}`}>{stock.symbol}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className={`font-bold ${isClosed ? 'text-slate-400' : 'text-slate-900'}`}>{stock.symbol}</span>
+                          <span className="text-[9px] font-black px-1 rounded bg-slate-100 text-slate-500">{stock.currency}</span>
+                        </div>
                         {isClosed && (
                           <span className="text-[10px] font-black text-indigo-500 uppercase tracking-tighter flex items-center gap-1">
                             <CheckCircle2 size={10} /> Closed
@@ -80,23 +87,23 @@ const PortfolioTable: React.FC<PortfolioTableProps> = ({ portfolio, onDelete, on
                       {stock.totalShares.toLocaleString()}
                     </td>
                     <td className={`px-4 py-4 text-right ${isClosed ? 'text-slate-400' : 'text-slate-600'}`}>
-                      {isClosed ? '-' : `$${stock.avgCost.toFixed(2)}`}
+                      {isClosed ? '-' : `${curSym}${stock.avgCost.toFixed(2)}`}
                     </td>
                     <td className={`px-4 py-4 text-right font-medium ${isClosed ? 'text-slate-400' : 'text-slate-800'}`}>
-                      {isClosed ? '-' : `$${stock.totalInvested.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                      {isClosed ? '-' : `${curSym}${stock.totalInvested.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
                     </td>
                     <td className={`px-4 py-4 text-right ${isClosed ? 'text-slate-300 italic' : 'text-slate-600'}`}>
-                        {isClosed ? 'Finalized' : stock.currentPrice ? `$${stock.currentPrice.toFixed(2)}` : '-'}
+                        {isClosed ? 'Finalized' : stock.currentPrice ? `${curSym}${stock.currentPrice.toFixed(2)}` : '-'}
                     </td>
                     <td className={`px-4 py-4 text-right font-medium ${isClosed ? 'text-slate-300 italic' : 'text-slate-800'}`}>
-                        {isClosed ? 'Finalized' : stock.currentPrice ? `$${marketValue.toLocaleString(undefined, {minimumFractionDigits: 2})}` : '-'}
+                        {isClosed ? 'Finalized' : stock.currentPrice ? `${curSym}${marketValue.toLocaleString(undefined, {minimumFractionDigits: 2})}` : '-'}
                     </td>
                     <td className={`px-4 py-4 text-right font-bold ${isClosed ? 'text-slate-300' : unrealizedPL >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                       {isClosed ? 'N/A' : stock.currentPrice ? `$${unrealizedPL.toLocaleString(undefined, {minimumFractionDigits: 2})}` : '-'}
+                       {isClosed ? 'N/A' : stock.currentPrice ? `${unrealizedPL >= 0 ? '+' : ''}${curSym}${Math.abs(unrealizedPL).toLocaleString(undefined, {minimumFractionDigits: 2})}` : '-'}
                     </td>
                     <td className={`px-4 py-4 text-right font-black ${stock.realizedPL >= 0 ? 'text-emerald-600' : 'text-rose-600'} ${isClosed ? 'bg-indigo-50/30' : ''}`}>
                       <div className="flex flex-col">
-                        <span>${stock.realizedPL.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                        <span>{stock.realizedPL >= 0 ? '+' : '-'}{curSym}{Math.abs(stock.realizedPL).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
                         {isClosed && <span className="text-[9px] uppercase opacity-60">Total Profit</span>}
                       </div>
                     </td>
@@ -112,12 +119,12 @@ const PortfolioTable: React.FC<PortfolioTableProps> = ({ portfolio, onDelete, on
                                    <tr>
                                        <th className="px-8 py-3 text-left w-[12%]">Date</th>
                                        <th className="px-4 py-3 text-left w-[8%]">Type</th>
-                                       <th className="px-4 py-3 text-left w-[10%]">Account</th>
+                                       <th className="px-4 py-3 text-left w-[12%]">Account</th>
                                        <th className="px-4 py-3 text-left w-[10%]">Exchange</th>
                                        <th className="px-4 py-3 text-right w-[10%]">Shares</th>
                                        <th className="px-4 py-3 text-right w-[10%]">Price</th>
                                        <th className="px-4 py-3 text-right w-[10%]">Cost/Basis</th>
-                                       <th className="px-4 py-3 text-right w-[15%]">Cur. Value</th>
+                                       <th className="px-4 py-3 text-right w-[13%]">Cur. Value</th>
                                        <th className="px-4 py-3 text-right w-[15%]">Actions</th>
                                    </tr>
                                </thead>
@@ -130,13 +137,16 @@ const PortfolioTable: React.FC<PortfolioTableProps> = ({ portfolio, onDelete, on
                                            <td className={`px-4 py-2.5 font-bold ${t.type === 'BUY' ? 'text-blue-600' : 'text-amber-600'}`}>
                                                {t.type}
                                            </td>
-                                           <td className="px-4 py-2.5 text-slate-500 uppercase font-medium">{t.account}</td>
+                                           <td className="px-4 py-2.5 text-slate-500 flex items-center gap-1">
+                                              <span className="uppercase font-medium">{t.account}</span>
+                                              <span className="text-[9px] font-bold bg-slate-100 px-1 rounded">{t.currency}</span>
+                                           </td>
                                            <td className="px-4 py-2.5 text-slate-400">{t.exchange}</td>
                                            <td className="px-4 py-2.5 text-right font-medium text-slate-700">{t.shares.toLocaleString()}</td>
-                                           <td className="px-4 py-2.5 text-right text-slate-600">${t.price.toFixed(2)}</td>
-                                           <td className="px-4 py-2.5 text-right text-slate-600">${(t.shares * t.price).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                                           <td className="px-4 py-2.5 text-right text-slate-600">{curSym}{t.price.toFixed(2)}</td>
+                                           <td className="px-4 py-2.5 text-right text-slate-600">{curSym}{(t.shares * t.price).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
                                            <td className="px-4 py-2.5 text-right font-medium text-slate-400">
-                                               {currentTxValue !== null ? `$${currentTxValue.toLocaleString(undefined, {minimumFractionDigits: 2})}` : '-'}
+                                               {currentTxValue !== null ? `${curSym}${currentTxValue.toLocaleString(undefined, {minimumFractionDigits: 2})}` : '-'}
                                            </td>
                                            <td className="px-4 py-2.5 text-right flex items-center justify-end gap-1">
                                                <button onClick={() => onEdit(t)} className="text-slate-300 hover:text-blue-600 transition-colors p-1.5 rounded-lg hover:bg-blue-50">

@@ -1,5 +1,6 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Transaction, StockSummary, PortfolioStats } from './types';
+import { Transaction, StockSummary, PortfolioStats, CurrencyStats } from './types';
 import StatsCards from './components/StatsCards';
 import TransactionForm from './components/TransactionForm';
 import PortfolioTable from './components/PortfolioTable';
@@ -14,6 +15,13 @@ import { Plus, Database, TrendingUp, Upload, Loader2, ArrowRight, Sparkles, Refr
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1'];
 
+const emptyCurrencyStats = (): CurrencyStats => ({
+  totalValue: 0,
+  totalCostBasis: 0,
+  totalRealizedPL: 0,
+  totalUnrealizedPL: 0,
+});
+
 const App: React.FC = () => {
   const { user, isLoading: isAuthLoading } = useAuth();
   
@@ -27,6 +35,7 @@ const App: React.FC = () => {
   const [priceError, setPriceError] = useState<string | null>(null);
   const [cooldownRemaining, setCooldownRemaining] = useState<number>(0);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [lastPriceUpdate, setLastPriceUpdate] = useState<Date | null>(null);
 
   // UI state
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -37,7 +46,8 @@ const App: React.FC = () => {
 
   // Refs for tracking and concurrency control
   const isFetchingRef = useRef(false);
-  const fetchedInSession = useRef<Set<string>>(new Set());
+  // Track which symbols have been refreshed during the current session
+  const sessionUpdatedSymbols = useRef<Set<string>>(new Set());
 
   // Cooldown timer effect
   useEffect(() => {
@@ -59,7 +69,7 @@ const App: React.FC = () => {
         setTransactions([]);
         setCurrentPrices({});
         setPriceSources([]);
-        fetchedInSession.current.clear();
+        sessionUpdatedSymbols.current.clear();
       }
       setIsDataLoaded(true);
       return;
@@ -76,7 +86,7 @@ const App: React.FC = () => {
     if (savedPrices) {
         const parsed = JSON.parse(savedPrices);
         setCurrentPrices(parsed);
-        Object.keys(parsed).forEach(k => fetchedInSession.current.add(k));
+        // Note: We don't mark these as session-updated because they are from cache
     }
     
     setIsDataLoaded(true);
@@ -91,9 +101,13 @@ const App: React.FC = () => {
   const updateMarketPrices = async (symbolsToFetch: string[], isManual = false) => {
     if (isFetchingRef.current || symbolsToFetch.length === 0 || cooldownRemaining > 0) return;
     
-    // EXTREMELY CONSERVATIVE: Only fetch symbols that don't already have a price in state
-    const filtered = isManual ? symbolsToFetch : symbolsToFetch.filter(s => !currentPrices[s]);
-    if (filtered.length === 0 && !isManual) return;
+    // Logic: Fetch if manual OR if the symbol hasn't been updated in THIS browser session.
+    // This ensures that when the app opens, it fetches fresh prices even if old ones are in localStorage.
+    const filtered = isManual 
+      ? symbolsToFetch 
+      : symbolsToFetch.filter(s => !sessionUpdatedSymbols.current.has(s));
+
+    if (filtered.length === 0) return;
 
     isFetchingRef.current = true;
     setIsRefreshingPrices(true);
@@ -101,16 +115,23 @@ const App: React.FC = () => {
     
     try {
       const { prices, sources } = await fetchCurrentPrices(filtered);
+      
       setCurrentPrices(prev => ({ ...prev, ...prices }));
       setPriceSources(sources);
-      filtered.forEach(s => fetchedInSession.current.add(s));
+      setLastPriceUpdate(new Date());
+
+      // Mark these symbols as updated for the current session
+      filtered.forEach(s => {
+        if (prices[s]) sessionUpdatedSymbols.current.add(s);
+      });
+
     } catch (err: any) {
       console.error("Market data fetch failed", err);
       const msg = err?.message || JSON.stringify(err);
       
       if (msg.includes("429") || msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED")) {
         setPriceError("Quota Limit - Waiting 60s");
-        setCooldownRemaining(60); // Aggressive cooldown for rate limits
+        setCooldownRemaining(60); 
       } else {
         setPriceError("Price fetch failed");
       }
@@ -121,8 +142,8 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
+    // Only auto-trigger when data is initially loaded or symbols change
     if (isDataLoaded && portfolioSymbols.length > 0) {
-        // Initial load fetch
         updateMarketPrices(portfolioSymbols);
     }
   }, [portfolioSymbols, isDataLoaded]);
@@ -144,7 +165,8 @@ const App: React.FC = () => {
         ...transactionData,
         symbol: (transactionData.symbol || 'UNKNOWN').toUpperCase().trim(),
         exchange: (transactionData.exchange || 'UNKNOWN').toUpperCase().trim(),
-        type: (transactionData.type || 'BUY').toString().toUpperCase().trim() as 'BUY' | 'SELL'
+        type: (transactionData.type || 'BUY').toString().toUpperCase().trim() as 'BUY' | 'SELL',
+        currency: (transactionData.currency || 'USD').toUpperCase()
     };
 
     if ('id' in normalizedData) {
@@ -163,7 +185,7 @@ const App: React.FC = () => {
     localStorage.removeItem(`prices_${user.id}`);
     setTransactions([]);
     setCurrentPrices({});
-    fetchedInSession.current.clear();
+    sessionUpdatedSymbols.current.clear();
     setIsDataMgmtOpen(false);
   };
 
@@ -173,6 +195,7 @@ const App: React.FC = () => {
           type: (t.type?.toString().toUpperCase().includes('SELL') ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
           symbol: (t.symbol || 'UNKNOWN').toUpperCase().trim(),
           exchange: (t.exchange || 'UNKNOWN').toUpperCase().trim(),
+          currency: (t.currency || 'USD').toUpperCase(),
           id: Math.random().toString(36).substr(2, 9)
       }));
       setTransactions(prev => [...prev, ...transactionsWithIds]);
@@ -183,16 +206,23 @@ const App: React.FC = () => {
   const { portfolio, stats } = useMemo(() => {
     const groups: Record<string, Transaction[]> = {};
     transactions.forEach(t => {
-      const symbolKey = (t.symbol || 'UNKNOWN').toUpperCase().trim();
+      const symbolKey = `${(t.symbol || 'UNKNOWN').toUpperCase().trim()}_${(t.currency || 'USD').toUpperCase()}`;
       if (!groups[symbolKey]) groups[symbolKey] = [];
       groups[symbolKey].push(t);
     });
 
     const stockSummaries: StockSummary[] = [];
-    let totalRealizedPL = 0, totalCostBasis = 0, totalValue = 0, totalUnrealizedPL = 0;
+    const portfolioStats: PortfolioStats = {
+      USD: emptyCurrencyStats(),
+      CAD: emptyCurrencyStats(),
+    };
 
-    Object.entries(groups).forEach(([symbol, txs]) => {
+    Object.entries(groups).forEach(([groupKey, txs]) => {
       txs.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      const symbol = txs[0].symbol;
+      const currency = txs[0].currency as 'USD' | 'CAD';
+      const statsRef = portfolioStats[currency] || portfolioStats.USD;
+
       let sharesHeld = 0, totalCost = 0, realizedPL = 0;
 
       txs.forEach(t => {
@@ -211,17 +241,21 @@ const App: React.FC = () => {
 
       if (sharesHeld < 0.000001) { sharesHeld = 0; totalCost = 0; }
       const currentPrice = currentPrices[symbol] || null;
-      totalRealizedPL += realizedPL;
-      totalCostBasis += totalCost;
+      
+      statsRef.totalRealizedPL += realizedPL;
+      statsRef.totalCostBasis += totalCost;
       
       if (currentPrice !== null && sharesHeld > 0) {
           const marketVal = sharesHeld * currentPrice;
-          totalValue += marketVal;
-          totalUnrealizedPL += (marketVal - totalCost);
-      } else { totalValue += totalCost; }
+          statsRef.totalValue += marketVal;
+          statsRef.totalUnrealizedPL += (marketVal - totalCost);
+      } else { 
+          statsRef.totalValue += totalCost; 
+      }
 
       stockSummaries.push({
         symbol,
+        currency,
         name: txs[0]?.name || symbol,
         totalShares: sharesHeld,
         avgCost: sharesHeld > 0 ? totalCost / sharesHeld : 0,
@@ -232,12 +266,18 @@ const App: React.FC = () => {
       });
     });
 
-    return { portfolio: stockSummaries.sort((a, b) => a.symbol.localeCompare(b.symbol)), stats: { totalValue, totalCostBasis, totalRealizedPL, totalUnrealizedPL } };
+    return { 
+        portfolio: stockSummaries.sort((a, b) => a.symbol.localeCompare(b.symbol)), 
+        stats: portfolioStats 
+    };
   }, [transactions, currentPrices]);
 
   const allocationData = portfolio
     .filter(s => s.totalShares > 0 && s.currentPrice)
-    .map(s => ({ name: s.symbol, value: (s.currentPrice || 0) * s.totalShares }));
+    .map(s => ({ 
+        name: `${s.symbol} (${s.currency})`, 
+        value: (s.currentPrice || 0) * s.totalShares 
+    }));
 
   if (isAuthLoading) {
       return (
@@ -292,11 +332,13 @@ const App: React.FC = () => {
 
           <div className="flex items-center gap-3">
               <div className="flex flex-col items-end mr-2">
-                {priceError && (
+                {priceError ? (
                     <div className="flex items-center gap-1.5 text-rose-500">
                          {cooldownRemaining > 0 && <span className="text-[10px] font-black bg-rose-50 px-1.5 rounded leading-none py-1">{cooldownRemaining}s</span>}
                          <span className="text-[9px] font-bold uppercase">{priceError}</span>
                     </div>
+                ) : (
+                    lastPriceUpdate && <span className="text-[9px] text-slate-400 font-bold uppercase">Updated {lastPriceUpdate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                 )}
                 <button 
                   onClick={() => updateMarketPrices(portfolioSymbols, true)} 
@@ -325,7 +367,7 @@ const App: React.FC = () => {
             <div className="flex items-center justify-between mb-4 px-2">
               <h2 className="text-sm font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">Holdings</h2>
               <div className="flex items-center gap-2 text-[10px] text-indigo-400 bg-indigo-50/50 px-2.5 py-1 rounded-full font-bold">
-                 <ShieldCheck size={12} /> Encrypted Storage Active
+                 <ShieldCheck size={12} /> Multi-Currency Analysis Enabled
               </div>
             </div>
             <PortfolioTable portfolio={portfolio} onDelete={id => setTransactions(t => t.filter(x => x.id !== id))} onEdit={t => { setEditingTransaction(t); setIsFormOpen(true); }} />
@@ -367,7 +409,7 @@ const App: React.FC = () => {
                                 <Pie data={allocationData} cx="50%" cy="50%" innerRadius={55} outerRadius={80} paddingAngle={8} dataKey="value" stroke="none">
                                     {allocationData.map((_, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
                                 </Pie>
-                                <Tooltip formatter={(v: number) => `$${v.toLocaleString()}`} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                                <Tooltip formatter={(v: number, name: string) => [`$${v.toLocaleString()}`, name]} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
                             </RechartsPieChart>
                         </ResponsiveContainer>
                         <div className="space-y-2 max-h-full overflow-y-auto pr-2">

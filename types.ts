@@ -24,6 +24,7 @@ export interface Transaction {
 export interface StockSummary {
   symbol: string;
   name: string;
+  currency: string;
   totalShares: number;
   avgCost: number;
   currentPrice: number | null;
@@ -32,9 +33,14 @@ export interface StockSummary {
   transactions: Transaction[];
 }
 
-export interface PortfolioStats {
+export interface CurrencyStats {
   totalValue: number;
   totalCostBasis: number; // of currently held shares
   totalRealizedPL: number;
   totalUnrealizedPL: number;
+}
+
+export interface PortfolioStats {
+  USD: CurrencyStats;
+  CAD: CurrencyStats;
 }
